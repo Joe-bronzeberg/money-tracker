@@ -148,6 +148,51 @@ class _PinState extends State<PinScreen> {
       );
 }
 
+const yel = Color(0xFFFFE9A6), gold = Color(0xFFF9BB00), cream = Color(0xFFFFF8E1), bg = Color(0xFFFFFDF7), softGold = Color(0xFFFFC94D);
+const expCats = {'Food & Drink': Icons.restaurant, 'Transport': Icons.directions_bus, 'Shopping': Icons.shopping_bag, 'Bills': Icons.receipt_long, 'Health': Icons.favorite, 'Entertainment': Icons.movie, 'Other': Icons.category};
+const incCats = {'Salary': Icons.work, 'Bonus': Icons.emoji_events, 'Allowance': Icons.payments, 'Investments': Icons.trending_up, 'Other': Icons.account_balance_wallet};
+const palette = [Color(0xFFF9BB00), Color(0xFFE8864B), Color(0xFF4CAF7D), Color(0xFF4A90E2), Color(0xFFE56B8A), Color(0xFF8E7CC3), Color(0xFF8A8A8A)];
+const bold = TextStyle(fontWeight: FontWeight.bold);
+
+Widget tile(IconData i, Color c) => Container(width: 44, height: 44, decoration: BoxDecoration(color: c, borderRadius: BorderRadius.circular(12)), child: Icon(i, color: Colors.white));
+IconData iconOf(String c, bool inc) => (inc ? incCats : expCats)[c] ?? Icons.category;
+Color colorOf(String c) => palette[c.codeUnits.fold(0, (a, b) => a + b) % palette.length];
+String mn(int v, Object? c) => '$c${(v / 100).toStringAsFixed(2)}';
+
+Widget tabsBar(List<String> l, int sel, void Function(int) on) => Row(children: [
+      for (var i = 0; i < l.length; i++)
+        Expanded(
+            child: InkWell(
+                onTap: () => on(i),
+                child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(border: Border(bottom: BorderSide(width: 3, color: sel == i ? Colors.black : Colors.transparent))),
+                    child: Text(l[i], style: TextStyle(fontWeight: sel == i ? FontWeight.bold : FontWeight.normal)))))
+    ]);
+
+class Donut extends CustomPainter {
+  final List<double> v;
+  Donut(this.v);
+  @override
+  void paint(Canvas c, Size s) {
+    final r = Rect.fromLTWH(14, 14, s.width - 28, s.height - 28);
+    final p = Paint()..style = PaintingStyle.stroke..strokeWidth = 28..color = const Color(0xFFF1EFEA);
+    c.drawArc(r, 0, 6.2832, false, p);
+    final t = v.fold(0.0, (a, b) => a + b);
+    if (t == 0) return;
+    var a0 = -1.5708;
+    for (var i = 0; i < v.length; i++) {
+      final sw = v[i] / t * 6.2832;
+      p.color = palette[i % palette.length];
+      c.drawArc(r, a0, sw, false, p);
+      a0 += sw;
+    }
+  }
+  @override
+  bool shouldRepaint(_) => true;
+}
+
 class Home extends StatefulWidget {
   final VoidCallback onLock;
   const Home({super.key, required this.onLock});
@@ -156,18 +201,22 @@ class Home extends StatefulWidget {
 }
 
 class _HomeState extends State<Home> {
-  int tab = 0;
+  int tab = 0, kind = 0;
   DateTime month = DateTime(DateTime.now().year, DateTime.now().month);
   List<Map<String, Object?>> wallets = [], txs = [], budgets = [];
   Map<int, int> spent = {};
   int get from => month.millisecondsSinceEpoch;
   int get to => DateTime(month.year, month.month + 1).millisecondsSinceEpoch;
+  String get cur => wallets.isEmpty ? 'ZMW' : '${wallets.first['currency']}';
+  int get total => wallets.where((w) => w['currency'] == cur).fold(0, (a, w) => a + (w['bal'] as int));
+  int sum(bool inc) => txs.where((t) => t['currency'] == cur && (t['income'] == 1) == inc).fold(0, (a, t) => a + (t['amount'] as int));
 
   @override
   void initState() { super.initState(); load(); }
 
   Future<void> load() async {
     final d = await db;
+    if ((await d.query('wallets', limit: 1)).isEmpty) await d.insert('wallets', {'name': 'Cash', 'currency': 'ZMW', 'opening': 0});
     wallets = await d.rawQuery('SELECT w.*, w.opening + COALESCE((SELECT SUM(CASE income WHEN 1 THEN amount ELSE -amount END) FROM tx WHERE wallet=w.id),0) AS bal FROM wallets w ORDER BY id');
     txs = await d.rawQuery('SELECT t.*, w.currency FROM tx t JOIN wallets w ON w.id=t.wallet WHERE ts>=? AND ts<? ORDER BY ts DESC', [from, to]);
     budgets = await d.query('budgets');
@@ -183,14 +232,12 @@ class _HomeState extends State<Home> {
   void shift(int n) { month = DateTime(month.year, month.month + n); load(); }
 
   Future<void> addTx([Map<String, Object?>? pre]) async {
-    if (wallets.isEmpty) { setState(() => tab = 2); return; }
-    final ok = await showModalBottomSheet<bool>(
-        context: context, isScrollControlled: true, builder: (_) => TxForm(wallets: wallets, pre: pre));
-    if (ok == true) load();
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => TxPage(wallets: wallets, pre: pre)));
+    load();
   }
 
   Future<void> addWallet() async {
-    final n = TextEditingController(), cur = TextEditingController(text: 'USD'), o = TextEditingController(text: '0');
+    final n = TextEditingController(), cur = TextEditingController(text: 'ZMW'), o = TextEditingController(text: '0');
     final ok = await showDialog<bool>(
         context: context,
         builder: (_) => AlertDialog(title: const Text('New wallet'), content: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -230,29 +277,8 @@ class _HomeState extends State<Home> {
     load();
   }
 
-  Widget txTab() => txs.isEmpty
-      ? const Center(child: Text('No transactions this month'))
-      : ListView(children: [
-          for (final t in txs)
-            ListTile(
-              title: Text('${t['category']}'),
-              subtitle: Text('${DateTime.fromMillisecondsSinceEpoch(t['ts'] as int).toString().substring(0, 10)}${(t['note'] ?? '') == '' ? '' : ' · ${t['note']}'}'),
-              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                Text('${t['income'] == 1 ? '+' : '-'}${money(t['amount'], t['currency'])}'),
-                PopupMenuButton<String>(
-                    onSelected: (v) async {
-                      if (v == 'dup') { addTx(t); }
-                      if (v == 'del' && await ask(context, 'Delete this transaction?')) {
-                        await (await db).delete('tx', where: 'id=?', whereArgs: [t['id']]);
-                        load();
-                      }
-                    },
-                    itemBuilder: (_) => const [PopupMenuItem(value: 'dup', child: Text('Duplicate')), PopupMenuItem(value: 'del', child: Text('Delete'))]),
-              ]),
-            )
-        ]);
 
-  Widget budgetTab() => budgets.isEmpty
+  Widget budgetList() => budgets.isEmpty
       ? const Center(child: Text('No budgets yet'))
       : ListView(children: [
           for (final b in budgets)
@@ -301,83 +327,226 @@ class _HomeState extends State<Home> {
             )
         ]);
 
+
+
+  Widget card(IconData i, Color c, String l, int v) => Expanded(
+      child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
+          child: Row(children: [
+            Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: c.withOpacity(.12), borderRadius: BorderRadius.circular(12)), child: Icon(i, color: c)),
+            const SizedBox(width: 10),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(l, style: const TextStyle(color: Colors.black54)), Text(mn(v, cur), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600))])),
+          ])));
+
+  Widget empty(IconData i, String t) => Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Icon(i, size: 96, color: softGold), const SizedBox(height: 12), Text(t, style: const TextStyle(color: Colors.black54))]));
+
+  Widget txTab() {
+    final rows = <Widget>[];
+    String? day;
+    for (final t in txs) {
+      final ds = DateTime.fromMillisecondsSinceEpoch(t['ts'] as int).toString().substring(0, 10);
+      if (ds != day) { day = ds; rows.add(Padding(padding: const EdgeInsets.fromLTRB(16, 14, 16, 2), child: Text(ds, style: const TextStyle(color: Colors.black54)))); }
+      final inc = t['income'] == 1, c = '${t['category']}';
+      rows.add(ListTile(
+        leading: tile(iconOf(c, inc), colorOf(c)),
+        title: Text(c),
+        subtitle: (t['note'] ?? '') == '' ? null : Text('${t['note']}'),
+        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+          Text('${inc ? '+' : '-'}${mn(t['amount'] as int, t['currency'])}', style: TextStyle(color: inc ? Colors.teal : Colors.black87, fontWeight: FontWeight.w600)),
+          PopupMenuButton<String>(
+              onSelected: (v) async {
+                if (v == 'dup') addTx(t);
+                if (v == 'del' && await ask(context, 'Delete this transaction?')) {
+                  await (await db).delete('tx', where: 'id=?', whereArgs: [t['id']]);
+                  load();
+                }
+              },
+              itemBuilder: (_) => const [PopupMenuItem(value: 'dup', child: Text('Duplicate')), PopupMenuItem(value: 'del', child: Text('Delete'))]),
+        ]),
+      ));
+    }
+    return Column(children: [
+      Container(width: double.infinity, color: yel, padding: const EdgeInsets.fromLTRB(16, 0, 16, 16), child: Column(children: [
+        const Text('Total Balance', style: TextStyle(color: Colors.black54)),
+        Text(mn(total, cur), style: const TextStyle(fontSize: 38, fontWeight: FontWeight.w600)),
+        const SizedBox(height: 12),
+        Row(children: [card(Icons.arrow_upward, Colors.deepOrange, 'Expense', sum(false)), const SizedBox(width: 12), card(Icons.arrow_downward, Colors.teal, 'Income', sum(true))]),
+      ])),
+      const Padding(padding: EdgeInsets.all(16), child: Align(alignment: Alignment.centerLeft, child: Text('Transactions', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)))),
+      Expanded(child: txs.isEmpty ? empty(Icons.edit_calendar_outlined, 'No transactions yet. Tap + to add one.') : ListView(children: rows)),
+    ]);
+  }
+
+  Widget reportTab() {
+    final inc = kind == 1;
+    final m = <String, int>{};
+    for (final t in txs) {
+      if (t['currency'] == cur && (t['income'] == 1) == inc) m['${t['category']}'] = (m['${t['category']}'] ?? 0) + (t['amount'] as int);
+    }
+    final e = m.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+    final tot = e.fold(0, (a, x) => a + x.value);
+    return ListView(padding: const EdgeInsets.all(16), children: [
+      Text('${inc ? 'Income' : 'Expense'} by category', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+      SizedBox(height: 250, child: Stack(alignment: Alignment.center, children: [CustomPaint(size: const Size(240, 240), painter: Donut([for (final x in e) x.value.toDouble()])), Text(mn(tot, cur), style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))])),
+      const Text('Ranking', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+      if (e.isEmpty) const Padding(padding: EdgeInsets.all(24), child: Center(child: Text('Nothing recorded this month'))),
+      for (var i = 0; i < e.length; i++)
+        ListTile(
+          leading: tile(iconOf(e[i].key, inc), palette[i % palette.length]),
+          title: Text(e[i].key),
+          subtitle: LinearProgressIndicator(value: e[i].value / tot, color: palette[i % palette.length], backgroundColor: cream),
+          trailing: Text(mn(e[i].value, cur)),
+        ),
+    ]);
+  }
+
+  Widget budgetTab() => budgets.isEmpty
+      ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.savings_outlined, size: 96, color: softGold),
+          const SizedBox(height: 12),
+          const Text('Set a monthly limit and stay on track', style: TextStyle(color: Colors.black54)),
+          const SizedBox(height: 16),
+          FilledButton(style: FilledButton.styleFrom(backgroundColor: gold, foregroundColor: Colors.black), onPressed: addBudget, child: const Text('CREATE NEW BUDGET')),
+        ]))
+      : budgetList();
+
+  Widget mine(IconData i, String l, VoidCallback f) => InkWell(
+      onTap: f,
+      child: Container(
+          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16), boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 6)]),
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(i, size: 36, color: gold), const SizedBox(height: 8), Text(l)])));
+
+  Widget mineTab() => GridView.count(crossAxisCount: 3, padding: const EdgeInsets.all(16), mainAxisSpacing: 12, crossAxisSpacing: 12, children: [
+        mine(Icons.account_balance_wallet, 'Wallets', () => setState(() => tab = 4)),
+        mine(Icons.lock_outline, 'Lock', widget.onLock),
+        mine(Icons.delete_outline, 'Delete data', () async {
+          if (await ask(context, 'Delete ALL data on this device?')) {
+            final d = await db;
+            for (final t in ['tx', 'budgets', 'wallets']) { await d.delete(t); }
+            load();
+          }
+        }),
+      ]);
+
+  Widget nav(int i, IconData ic, String l) => InkWell(
+      onTap: () => setState(() => tab = i),
+      child: Padding(padding: const EdgeInsets.all(6), child: Column(mainAxisSize: MainAxisSize.min, children: [Icon(ic, color: tab == i ? gold : Colors.black45), Text(l, style: TextStyle(fontSize: 12, color: tab == i ? gold : Colors.black45))])));
+
   @override
   Widget build(BuildContext c) => Scaffold(
+        backgroundColor: bg,
         appBar: AppBar(
-          title: Row(mainAxisSize: MainAxisSize.min, children: [
-            IconButton(icon: const Icon(Icons.chevron_left), onPressed: () => shift(-1)),
-            Text('${month.year}-${month.month.toString().padLeft(2, '0')}'),
-            IconButton(icon: const Icon(Icons.chevron_right), onPressed: () => shift(1)),
-          ]),
+          backgroundColor: yel, elevation: 0, scrolledUnderElevation: 0,
+          leading: tab == 4 ? IconButton(icon: const Icon(Icons.arrow_back), onPressed: () => setState(() => tab = 3)) : null,
+          title: Text(['My Wallet', 'My Wallet', 'Budget', 'Mine', 'Wallets'][tab], style: bold),
           actions: [
-            IconButton(icon: const Icon(Icons.lock_outline), onPressed: widget.onLock),
-            PopupMenuButton<String>(
-                onSelected: (_) async {
-                  if (await ask(context, 'Delete ALL data on this device?')) {
-                    final d = await db;
-                    for (final t in ['tx', 'budgets', 'wallets']) { await d.delete(t); }
-                    load();
-                  }
-                },
-                itemBuilder: (_) => const [PopupMenuItem(value: 'wipe', child: Text('Delete all data'))]),
+            if (tab < 2) ...[
+              IconButton(icon: const Icon(Icons.chevron_left), onPressed: () => shift(-1)),
+              Center(child: Text('${month.year} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][month.month - 1]}')),
+              IconButton(icon: const Icon(Icons.chevron_right), onPressed: () => shift(1)),
+            ],
+            if (tab == 2) IconButton(icon: const Icon(Icons.add_box), onPressed: addBudget),
+            if (tab == 4) IconButton(icon: const Icon(Icons.add_box), onPressed: addWallet),
           ],
+          bottom: tab == 1 ? PreferredSize(preferredSize: const Size.fromHeight(48), child: tabsBar(['Expense', 'Income'], kind, (i) => setState(() => kind = i))) : null,
         ),
-        body: [txTab(), budgetTab(), walletTab()][tab],
-        floatingActionButton: FloatingActionButton(
-            onPressed: () => [addTx, addBudget, addWallet][tab](), child: const Icon(Icons.add)),
-        bottomNavigationBar: NavigationBar(selectedIndex: tab, onDestinationSelected: (i) => setState(() => tab = i), destinations: const [
-          NavigationDestination(icon: Icon(Icons.list), label: 'Transactions'),
-          NavigationDestination(icon: Icon(Icons.pie_chart_outline), label: 'Budgets'),
-          NavigationDestination(icon: Icon(Icons.account_balance_wallet_outlined), label: 'Wallets'),
-        ]),
+        body: [txTab(), reportTab(), budgetTab(), mineTab(), walletTab()][tab],
+        floatingActionButton: FloatingActionButton(backgroundColor: gold, foregroundColor: Colors.black, shape: const CircleBorder(), onPressed: () => addTx(), child: const Icon(Icons.add, size: 32)),
+        floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
+        bottomNavigationBar: BottomAppBar(
+            shape: const CircularNotchedRectangle(), notchMargin: 8, color: Colors.white,
+            child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [nav(0, Icons.list_alt, 'Transaction'), nav(1, Icons.bar_chart, 'Report'), const SizedBox(width: 56), nav(2, Icons.grid_view, 'Budget'), nav(3, Icons.person, 'Mine')])),
       );
 }
 
-class TxForm extends StatefulWidget {
+class TxPage extends StatefulWidget {
   final List<Map<String, Object?>> wallets;
   final Map<String, Object?>? pre;
-  const TxForm({super.key, required this.wallets, this.pre});
+  const TxPage({super.key, required this.wallets, this.pre});
   @override
-  State<TxForm> createState() => _TxFormState();
+  State<TxPage> createState() => _TxPageState();
 }
 
-class _TxFormState extends State<TxForm> {
+class _TxPageState extends State<TxPage> {
   late int wallet = (widget.pre?['wallet'] ?? widget.wallets.first['id']) as int;
   late bool income = widget.pre?['income'] == 1;
+  late String cat = (widget.pre?['category'] ?? 'Food & Drink') as String;
   late final amt = TextEditingController(text: widget.pre == null ? '' : ((widget.pre!['amount'] as int) / 100).toStringAsFixed(2));
-  late final cat = TextEditingController(text: '${widget.pre?['category'] ?? ''}');
-  late final note = TextEditingController(text: '${widget.pre?['note'] ?? ''}');
+  final note = TextEditingController();
   DateTime date = DateTime.now();
   String? err;
+  Map<String, Object?> get w => widget.wallets.firstWhere((x) => x['id'] == wallet);
 
-  Future<void> save() async {
+  Future<bool> save() async {
     final a = minor(amt.text);
-    if (a == null || a == 0) { setState(() => err = 'Enter a valid amount'); return; }
-    if (cat.text.trim().isEmpty) { setState(() => err = 'Enter a category'); return; }
-    await (await db).insert('tx', {'wallet': wallet, 'income': income ? 1 : 0, 'amount': a, 'category': cat.text.trim(), 'note': note.text.trim(), 'ts': date.millisecondsSinceEpoch});
-    if (mounted) Navigator.pop(context, true);
+    if (a == null || a == 0) { setState(() => err = 'Enter a valid amount'); return false; }
+    await (await db).insert('tx', {'wallet': wallet, 'income': income ? 1 : 0, 'amount': a, 'category': cat, 'note': note.text.trim(), 'ts': date.millisecondsSinceEpoch});
+    return true;
   }
 
+  Future<void> pickCat() async {
+    final m = income ? incCats : expCats;
+    final r = await showModalBottomSheet<String>(
+        context: context,
+        builder: (c) => GridView.count(crossAxisCount: 3, padding: const EdgeInsets.all(16), children: [
+              for (final e in m.entries)
+                InkWell(onTap: () => Navigator.pop(c, e.key), child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [tile(e.value, colorOf(e.key)), const SizedBox(height: 6), Text(e.key, textAlign: TextAlign.center)])),
+              InkWell(onTap: () => Navigator.pop(c, '+'), child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [tile(Icons.add, Colors.black54), const SizedBox(height: 6), const Text('New')])),
+            ]));
+    if (r == '+') {
+      final t = TextEditingController();
+      final ok = await showDialog<bool>(context: context, builder: (c) => AlertDialog(title: const Text('New category'), content: TextField(controller: t, maxLength: 30, autofocus: true), actions: [TextButton(onPressed: () => Navigator.pop(c, true), child: const Text('Add'))]));
+      if (ok == true && t.text.trim().isNotEmpty) setState(() => cat = t.text.trim());
+    } else if (r != null) {
+      setState(() => cat = r);
+    }
+  }
+
+  Future<void> pickWallet() async {
+    final r = await showModalBottomSheet<int>(
+        context: context,
+        builder: (c) => ListView(children: [for (final x in widget.wallets) ListTile(leading: tile(Icons.account_balance_wallet, const Color(0xFF6BD68B)), title: Text('${x['name']} (${x['currency']})'), onTap: () => Navigator.pop(c, x['id'] as int))]));
+    if (r != null) setState(() => wallet = r);
+  }
+
+  Widget field(IconData i, String label, Widget lead, String text, VoidCallback onTap) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Padding(padding: const EdgeInsets.fromLTRB(16, 18, 16, 8), child: Row(children: [Icon(i, size: 18), const SizedBox(width: 8), Text(label, style: const TextStyle(color: Colors.black54))])),
+        InkWell(onTap: onTap, child: Padding(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6), child: Row(children: [lead, const SizedBox(width: 14), Expanded(child: Text(text, style: const TextStyle(fontSize: 18))), const Icon(Icons.chevron_right)]))),
+        const Divider(indent: 16, endIndent: 16),
+      ]);
+
   @override
-  Widget build(BuildContext c) => Padding(
-        padding: EdgeInsets.fromLTRB(16, 16, 16, MediaQuery.of(c).viewInsets.bottom + 16),
-        child: SingleChildScrollView(
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            SegmentedButton<bool>(segments: const [ButtonSegment(value: false, label: Text('Expense')), ButtonSegment(value: true, label: Text('Income'))], selected: {income}, onSelectionChanged: (s) => setState(() => income = s.first)),
-            DropdownButtonFormField<int>(value: wallet, items: [for (final w in widget.wallets) DropdownMenuItem(value: w['id'] as int, child: Text('${w['name']} (${w['currency']})'))], onChanged: (v) => setState(() => wallet = v!)),
-            TextField(controller: amt, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Amount')),
-            TextField(controller: cat, maxLength: 30, decoration: const InputDecoration(labelText: 'Category')),
-            Wrap(spacing: 6, children: [for (final x in ['Food', 'Transport', 'Bills', 'Shopping', 'Health', 'Salary', 'Other']) ActionChip(label: Text(x), onPressed: () => setState(() => cat.text = x))]),
-            TextField(controller: note, maxLength: 100, decoration: const InputDecoration(labelText: 'Note (optional)')),
-            Row(children: [
-              TextButton(onPressed: () async {
-                final d = await showDatePicker(context: c, initialDate: date, firstDate: DateTime(2000), lastDate: DateTime.now().add(const Duration(days: 1)));
-                if (d != null) setState(() => date = d);
-              }, child: Text(date.toString().substring(0, 10))),
-              const Spacer(),
-              if (err != null) Text(err!),
-              FilledButton(onPressed: save, child: const Text('Save')),
-            ]),
+  Widget build(BuildContext c) => Scaffold(
+        backgroundColor: bg,
+        appBar: AppBar(
+          backgroundColor: yel, elevation: 0, scrolledUnderElevation: 0,
+          title: const Text('New Transaction', style: bold),
+          bottom: PreferredSize(preferredSize: const Size.fromHeight(48), child: tabsBar(['Expense', 'Income'], income ? 1 : 0, (i) => setState(() { income = i == 1; cat = (income ? incCats : expCats).keys.first; }))),
+        ),
+        body: ListView(children: [
+          Padding(padding: const EdgeInsets.fromLTRB(16, 24, 16, 0), child: Row(children: [
+            Text('${w['currency']}', style: const TextStyle(fontSize: 48, color: gold)),
+            const SizedBox(width: 12),
+            Expanded(child: TextField(controller: amt, autofocus: true, keyboardType: const TextInputType.numberWithOptions(decimal: true), style: const TextStyle(fontSize: 48), decoration: const InputDecoration(hintText: '0', border: InputBorder.none))),
+          ])),
+          const Divider(indent: 16, endIndent: 16, color: gold),
+          field(Icons.category_outlined, 'Category', tile(iconOf(cat, income), colorOf(cat)), cat, pickCat),
+          field(Icons.account_balance_wallet_outlined, 'Payment Method', tile(Icons.account_balance_wallet, const Color(0xFF6BD68B)), '${w['name']} (${w['currency']})', pickWallet),
+          field(Icons.event, 'Date', tile(Icons.calendar_month, softGold), date.toString().substring(0, 10), () async {
+            final d = await showDatePicker(context: c, initialDate: date, firstDate: DateTime(2000), lastDate: DateTime.now().add(const Duration(days: 1)));
+            if (d != null) setState(() => date = d);
+          }),
+          Padding(padding: const EdgeInsets.fromLTRB(16, 18, 16, 0), child: Row(children: const [Icon(Icons.notes, size: 18), SizedBox(width: 8), Text('Note', style: TextStyle(color: Colors.black54))])),
+          Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: TextField(controller: note, maxLength: 100, decoration: const InputDecoration(hintText: 'Add a note', border: InputBorder.none))),
+          if (err != null) Padding(padding: const EdgeInsets.all(16), child: Text(err!, style: const TextStyle(color: Colors.red))),
+        ]),
+        bottomNavigationBar: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(children: [
+            Expanded(child: OutlinedButton(style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(52), foregroundColor: Colors.black54), onPressed: () async { if (await save()) { amt.clear(); note.clear(); setState(() => err = null); } }, child: const Text('CONTINUE'))),
+            const SizedBox(width: 12),
+            Expanded(child: FilledButton(style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(52), backgroundColor: gold, foregroundColor: Colors.black), onPressed: () async { if (await save() && mounted) Navigator.pop(context); }, child: const Text('SAVE'))),
           ]),
         ),
       );
